@@ -6,12 +6,14 @@ import (
 	pointdns "github.com/copper/go-pointdns"
 	"io/ioutil"
 	"net/http"
+	"time"
 )
 
 var email string
 var apiKey string
 var zone string
 var record string
+var savedIp string
 
 var Record pointdns.Record
 var Zone pointdns.Zone
@@ -31,66 +33,76 @@ func init() {
 }
 
 func main() {
-	fmt.Println("Starting...")
 	flag.Parse()
+
+	ipchange = make(chan string)
 
 	if email == "" || apiKey == "" || zone == "" || record == "" {
 		fmt.Println("Invalid arguments")
 		return
 	}
 
-	myIp, err := getIp()
-	if err != nil {
-		fmt.Println(err)
-	}
-
-	fmt.Println(myIp)
-
 	client := pointdns.NewClient(email, apiKey)
-
-	zones, err := client.Zones()
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
 	hostname := fmt.Sprintf("%s.%s.", record, zone)
+	ticker := time.NewTicker(15 * time.Minute)
 
-	for _, z := range zones {
-		if z.Name == zone {
-			Zone = z
-			records, _ := z.Records()
-			for _, r := range records {
-				if r.Name == hostname {
-					Record = r
+	go func() {
+		for t := range ticker.C {
+			currentIp, err := getIp()
+			if err != nil {
+				fmt.Println(err)
+			} else if currentIp != savedIp {
+				ipchange <- currentIp
+				fmt.Println("Updating DNS to match new IP:", currentIp)
+			}
+		}
+	}()
+
+	for newIp := range ipchange {
+
+		if Zone == nil || Record == nil {
+			zones, err := client.Zones()
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+
+			for _, z := range zones {
+				if z.Name == zone {
+					Zone = z
+					records, _ := z.Records()
+					for _, r := range records {
+						if r.Name == hostname {
+							Record = r
+						}
+					}
 				}
 			}
 		}
-	}
 
-	fmt.Println("Record: ", Record.Id > 0)
-	if Record.Id == 0 {
-		newRecord := pointdns.Record{
-			Name:       hostname,
-			Data:       myIp,
-			RecordType: "A",
-			Ttl:        600,
-			ZoneId:     Zone.Id,
+		if Record.Id == 0 {
+			newRecord := pointdns.Record{
+				Name:       hostname,
+				Data:       newIp,
+				RecordType: "A",
+				Ttl:        600,
+				ZoneId:     Zone.Id,
+			}
+			savedRecord, err := client.CreateRecord(&newRecord)
+			if err != nil {
+				fmt.Println(err)
+			}
+			if savedRecord {
+				fmt.Println("Created a new Record:", hostname)
+				Record = newRecord
+			}
+		} else {
+			Record.Data = newIp
+			Record.Save()
 		}
-		savedRecord, err := client.CreateRecord(&newRecord)
-		if err != nil {
-			fmt.Println(err)
-		}
-		if savedRecord {
-			fmt.Println("Created a new Record:", hostname)
-			Record = newRecord
-		}
-	} else {
-		Record.Data = myIp
-		Record.Save()
-	}
 
-	fmt.Println(Record)
+		fmt.Println("Saved DNS record for IP:", newIp)
+	}
 }
 
 func getIp() (string, error) {
