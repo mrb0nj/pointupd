@@ -35,7 +35,7 @@ func init() {
 func main() {
 	flag.Parse()
 
-	ipchange = make(chan string)
+	ipchange := make(chan string)
 
 	if email == "" || apiKey == "" || zone == "" || record == "" {
 		fmt.Println("Invalid arguments")
@@ -47,20 +47,16 @@ func main() {
 	ticker := time.NewTicker(15 * time.Minute)
 
 	go func() {
+		checkIp(ipchange)
 		for t := range ticker.C {
-			currentIp, err := getIp()
-			if err != nil {
-				fmt.Println(err)
-			} else if currentIp != savedIp {
-				ipchange <- currentIp
-				fmt.Println("Updating DNS to match new IP:", currentIp)
-			}
+			fmt.Println("POLL:", t)
+			checkIp(ipchange)
 		}
 	}()
 
 	for newIp := range ipchange {
 
-		if Zone == nil || Record == nil {
+		if Zone.Id == 0 || Record.Id == 0 {
 			zones, err := client.Zones()
 			if err != nil {
 				fmt.Println(err)
@@ -96,12 +92,23 @@ func main() {
 				fmt.Println("Created a new Record:", hostname)
 				Record = newRecord
 			}
-		} else {
+		} else if Record.Data != newIp {
 			Record.Data = newIp
 			Record.Save()
 		}
 
 		fmt.Println("Saved DNS record for IP:", newIp)
+	}
+}
+
+func checkIp(ipchan chan string) {
+	fmt.Println("Checking for IP change")
+	currentIp, err := getIp()
+	if err != nil {
+		fmt.Println(err)
+	} else if currentIp != savedIp {
+		ipchan <- currentIp
+		fmt.Println("Updating DNS to match new IP:", currentIp)
 	}
 }
 
