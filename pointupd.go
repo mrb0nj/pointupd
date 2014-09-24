@@ -6,110 +6,134 @@ import (
 	pointdns "github.com/copper/go-pointdns"
 	"io/ioutil"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 )
 
 var email string
 var apiKey string
-var zone string
-var record string
-var savedIp string
-
-var Record pointdns.Record
-var Zone pointdns.Zone
+var domain string
+var host string
+var interval int
 
 func init() {
 	const (
-		defaultEmail  = ""
-		defaultApiKey = ""
-		defaultRecord = ""
-		defaultZone   = ""
+		defaultEmail    = ""
+		defaultApiKey   = ""
+		defaultHost     = ""
+		defaultDomain   = ""
+		defaultInterval = 15
 	)
 
-	flag.StringVar(&email, "email", defaultEmail, "your registered pointhq email or username")
+	flag.StringVar(&email, "email", defaultEmail, "your pointhq email address")
 	flag.StringVar(&apiKey, "apiKey", defaultApiKey, "your pointhq api key")
-	flag.StringVar(&zone, "zone", defaultZone, "the zone that 'record' belongs to")
-	flag.StringVar(&record, "record", defaultRecord, "the record to update")
+	flag.StringVar(&domain, "domain", defaultDomain, "the domain name")
+	flag.StringVar(&host, "host", defaultHost, "the host record to update")
+	flag.IntVar(&interval, "interval", defaultInterval, "how often to check for changes")
 }
 
 func main() {
+	p := fmt.Println
 	flag.Parse()
 
-	ipchange := make(chan string)
+	if email == "" {
+		p("you must provide your pointhq email address")
+		return
+	}
 
-	if email == "" || apiKey == "" || zone == "" || record == "" {
-		fmt.Println("Invalid arguments")
+	if apiKey == "" {
+		p("you must provide your pointhq api key")
+		return
+	}
+
+	if domain == "" {
+		p("you must provide your pointhq domain name. e.g. mydomain.com")
+		return
+	}
+
+	if host == "" {
+		p("you must provide the host record you want to update. e.g. home")
 		return
 	}
 
 	client := pointdns.NewClient(email, apiKey)
-	hostname := fmt.Sprintf("%s.%s.", record, zone)
-	ticker := time.NewTicker(15 * time.Minute)
+	hostname := fmt.Sprintf("%s.%s.", host, domain)
+
+	ipchan := make(chan string)
+	ticker := time.NewTicker(time.Duration(interval) * time.Minute)
+
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		checkIp(ipchange)
+		sig := <-signals
+		p("INF: Signal received", sig)
+		close(ipchan)
+	}()
+
+	var record pointdns.Record
+
+	go func() {
 		for t := range ticker.C {
-			fmt.Println("POLL:", t)
-			checkIp(ipchange)
+			p("INF: Checking for ip changed from", record.Data, t)
+			ip, err := getIp()
+			if err != nil {
+				p("ERR: Unable to get current ip address", err)
+			} else if ip != record.Data {
+				ipchan <- ip
+			}
 		}
 	}()
 
-	for newIp := range ipchange {
+	for ip := range ipchan {
 
-		if Zone.Id == 0 || Record.Id == 0 {
-			zones, err := client.Zones()
+		if record.Id > 0 {
+			record.Data = ip
+			saved, err := record.Save()
 			if err != nil {
-				fmt.Println(err)
-				return
+				p("ERR: Unable to update record for", hostname, err)
 			}
-
-			for _, z := range zones {
-				if z.Name == zone {
-					Zone = z
-					records, _ := z.Records()
+			if saved {
+				p("INF: Updated record for", hostname, ip)
+			}
+		} else {
+			zones, _ := client.Zones()
+			for _, zone := range zones {
+				if zone.Name == domain {
+					records, _ := zone.Records()
 					for _, r := range records {
 						if r.Name == hostname {
-							Record = r
+							record = r
+						}
+					}
+
+					if record.Id == 0 {
+						newRecord := pointdns.Record{
+							Name:       hostname,
+							Data:       ip,
+							RecordType: "A",
+							Ttl:        600,
+							ZoneId:     zone.Id,
+						}
+
+						created, err := client.CreateRecord(&newRecord)
+						if err != nil {
+							p("ERR: Unable to create new record", err)
+						}
+
+						if created {
+							p("INF: Created a new record for", hostname, ip)
+							record = newRecord
 						}
 					}
 				}
 			}
 		}
-
-		if Record.Id == 0 {
-			newRecord := pointdns.Record{
-				Name:       hostname,
-				Data:       newIp,
-				RecordType: "A",
-				Ttl:        600,
-				ZoneId:     Zone.Id,
-			}
-			savedRecord, err := client.CreateRecord(&newRecord)
-			if err != nil {
-				fmt.Println(err)
-			}
-			if savedRecord {
-				fmt.Println("Created a new Record:", hostname)
-				Record = newRecord
-			}
-		} else if Record.Data != newIp {
-			Record.Data = newIp
-			Record.Save()
-		}
-
-		fmt.Println("Saved DNS record for IP:", newIp)
 	}
-}
 
-func checkIp(ipchan chan string) {
-	fmt.Println("Checking for IP change")
-	currentIp, err := getIp()
-	if err != nil {
-		fmt.Println(err)
-	} else if currentIp != savedIp {
-		ipchan <- currentIp
-		fmt.Println("Updating DNS to match new IP:", currentIp)
-	}
+	p("INF: Exiting...")
 }
 
 func getIp() (string, error) {
@@ -119,8 +143,7 @@ func getIp() (string, error) {
 	}
 
 	defer res.Body.Close()
-	data, _ := ioutil.ReadAll(res.Body)
-	ip := fmt.Sprintf("%s", data)
 
-	return ip, nil
+	data, _ := ioutil.ReadAll(res.Body)
+	return fmt.Sprintf("%s", data), nil
 }
