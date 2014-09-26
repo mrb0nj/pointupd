@@ -61,7 +61,7 @@ func main() {
 	client := pointdns.NewClient(email, apiKey)
 	hostname := fmt.Sprintf("%s.%s.", host, domain)
 
-	ipchan := make(chan string)
+	ipchan := make(chan string, 1)
 	ticker := time.NewTicker(time.Duration(interval) * time.Minute)
 
 	signals := make(chan os.Signal, 1)
@@ -79,6 +79,7 @@ func main() {
 		for t := range ticker.C {
 			p("INF: Checking for ip changed from", record.Data, t)
 			ip, err := getIp()
+			p("INF: Found ip address", ip)
 			if err != nil {
 				p("ERR: Unable to get current ip address", err)
 			} else if ip != record.Data {
@@ -127,6 +128,8 @@ func main() {
 							p("INF: Created a new record for", hostname, ip)
 							record = newRecord
 						}
+					} else if record.Data != ip {
+						ipchan <- ip
 					}
 				}
 			}
@@ -137,7 +140,7 @@ func main() {
 }
 
 func getIp() (string, error) {
-	res, err := http.Get("http://icanhazip.com")
+	res, err := http.Get("http://allyourips.herokuapp.com/")
 	if err != nil {
 		return "", err
 	}
