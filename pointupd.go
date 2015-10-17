@@ -103,7 +103,13 @@ func main() {
 			}
 		} else {
 			p("INF: Looking for dns record for", hostname)
-			zones, _ := client.Zones()
+			zones, err := client.Zones()
+			if err != nil {
+				p("ERR: Unable to lookup zones", err)
+			} else {
+				p("INF: Fond zones", zones)
+			}
+
 			for _, zone := range zones {
 				if zone.Name == domain {
 					records, _ := zone.Records()
